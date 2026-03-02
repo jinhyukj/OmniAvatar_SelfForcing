@@ -77,21 +77,21 @@ def instantiate(cfg, *args, **kwargs):
         cls = instantiate(cls)
 
         if isinstance(cls, str):
-            cls_name = cls
+            cls_name = cls          
             cls = locate(cls_name)
             assert cls is not None, cls_name
         else:
             try:
-                cls_name = cls.__module__ + "." + cls.__qualname__
+                cls_name = cls.__module__ + "." + cls.__qualname__  ### fastgen.methods.distribution_matching.self_forcing.SelfForcingMode
             except Exception:
                 # target could be anything, so the above could fail
                 cls_name = str(cls)
         assert callable(cls), f"_target_ {cls} does not define a callable object"
         try:
             additional_kwargs = {}
-            additional_kwargs.update(cfg)
+            additional_kwargs.update(cfg)  # {"config": <ModelConfig>}
             additional_kwargs.update(kwargs)
-            return cls(*args, **additional_kwargs)
+            return cls(*args, **additional_kwargs)    # SelfForcingModel(config=<ModelConfig>)
         except TypeError:
             logger.error(f"Error when instantiating {cls_name}!")
             raise

@@ -209,7 +209,7 @@ class DMD2Model(FastGenModel):
             tuple of (loss_map, outputs)
         """
         # Generate data from student
-        gen_data = self.gen_data_from_net(input_student, t_student, condition=condition)
+        gen_data = self.gen_data_from_net(input_student, t_student, condition=condition)        ## fastgen/methods/distribution_matching/self_forcing.py
         perturbed_data = self.net.noise_scheduler.forward_process(gen_data, eps, t)
 
         # Compute the fake score with x0-prediction
@@ -438,9 +438,58 @@ class DMD2Model(FastGenModel):
         # Prepare training data and conditions
         real_data, condition, neg_condition = self._prepare_training_data(data)
 
+
+        """
+        def _setup_grad_requirements(self, iteration: int) -> None:
+            if iteration % self.config.student_update_freq == 0:
+                # update the student
+                self.fake_score.eval().requires_grad_(False)
+                if self.config.gan_loss_weight_gen > 0:
+                    self.discriminator.eval().requires_grad_(False)
+            else:
+                # update the fake_score and discriminator
+                self.fake_score.train().requires_grad_(True)
+                if self.config.gan_loss_weight_gen > 0:
+                    self.discriminator.train().requires_grad_(True)
+
+        With student_update_freq=5:
+
+        Iteration 5, 10, 15, ... (student update): Freezes fake_score and discriminator — sets them to eval mode and disables gradients. The student net is the only thing being trained.
+
+        Iterations 1,2,3,4, 6,7,8,9, ... (fake_score/discriminator update): Unfreezes fake_score and discriminator — sets them to train mode and enables gradients. The student net doesn't get gradients because gen_data_from_net is
+        called under torch.no_grad() in _fake_score_discriminator_update_step.
+
+        Note that the student net itself isn't toggled here — it always has requires_grad_(True). It's just that on non-student iterations, the generated data is detached so no gradient flows back to it.
+        """
         # Set up gradient requirements based on training phase
         self._setup_grad_requirements(iteration)
 
+
+
+        """
+        def _generate_noise_and_time(self, real_data):
+            batch_size = real_data.shape[0]  # 1 in your case
+
+            # Pure random noise, scaled to starting latent
+            eps_student = torch.randn(batch_size, *self.input_shape, ...)  # [1, 16, 21, 60, 104]
+            t_student = max_t  # e.g. 0.999
+            input_student = self.net.noise_scheduler.latents(noise=eps_student)  # scale noise to t_max
+
+            # Sample a random timestep for distribution matching
+            t = self.net.noise_scheduler.sample_t(batch_size, ...)  # single random t from "shifted" distribution
+
+            # Random noise for the forward process (noising generated/real data)
+            eps = torch.randn_like(real_data, ...)  # [1, 16, 21, 60, 104]
+
+            return input_student, t_student, t, eps
+
+        The four outputs:
+
+        - input_student — pure noise scaled to the maximum noise level. This is what the student starts denoising from during the self-forcing rollout.
+        - t_student — the starting timestep (max_t = 0.999). Always the same since the student always starts from full noise.
+        - t — a random timestep sampled from the "shifted" distribution (between 0.001 and 0.999). Used for the distribution matching part — noising generated/real data to this level for VSD or DSM loss.
+        - eps — random noise used to perturb generated or real data to timestep t via the forward process.
+        """
         # Generate noise and time steps
         input_student, t_student, t, eps = self._generate_noise_and_time(real_data)
 

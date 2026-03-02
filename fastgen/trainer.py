@@ -94,7 +94,7 @@ class Trainer:
 
         logger.info("Starting model.on_train_begin ...")
         synchronize()
-        model.on_train_begin(is_fsdp=self.config.trainer.fsdp)
+        model.on_train_begin(is_fsdp=self.config.trainer.fsdp)      ## moves networks from CPU to GPU
         synchronize()
         logger.info("model.on_train_begin completed")
 
@@ -311,7 +311,7 @@ class Trainer:
             with ddp.ddp_sync_grad(model_ddp, sync_grads):
                 # forward pass
                 with model.autocast():
-                    loss_map, outputs = model_ddp.single_train_step(data, iteration)
+                    loss_map, outputs = model_ddp.single_train_step(data, iteration)        #### fastgen/methods/distribution_matching/dmd2.py 
                 # backward pass
                 self.callbacks.on_backward_begin(
                     model, data, outputs, loss_map, iteration=iteration, accum_iter=grad_accum_iter

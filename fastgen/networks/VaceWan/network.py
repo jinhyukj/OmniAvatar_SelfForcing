@@ -475,7 +475,7 @@ class VACEWan(Wan):
         in_meta_context = self._is_in_meta_context()
         should_load_weights = load_pretrained and (not in_meta_context)
 
-        if should_load_weights:
+        if should_load_weights:         #### <------- Here
             logger.info("Loading VaceWan transformer")
             self.transformer: WanVACETransformer3DModel = WanVACETransformer3DModel.from_pretrained(
                 model_id_or_local_path,

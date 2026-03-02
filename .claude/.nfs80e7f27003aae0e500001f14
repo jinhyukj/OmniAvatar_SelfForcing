@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(conda run:*)",
+      "Bash(conda env:*)",
+      "Bash(/home/work/.local/miniconda3/envs/fastgen/bin/python:*)",
+      "Bash(/home/work/.local/miniconda3/envs/fastgen/bin/python3.12:*)",
+      "Bash(/home/work/.local/miniconda3/envs/fastgen/bin/pip show:*)",
+      "Bash(wget:*)",
+      "Bash(/home/work/.local/miniconda3/envs/fastgen/bin/huggingface-cli download:*)",
+      "Bash(/home/work/.local/miniconda3/envs/fastgen/bin/pip install:*)",
+      "Bash(huggingface-cli download:*)",
+      "Bash(ls:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(/home/work/.local/miniconda3/envs/fastgen/bin/pip list:*)",
+      "Bash(CUDA_VISIBLE_DEVICES=2 /home/work/.local/miniconda3/envs/fastgen/bin/python:*)",
+      "Bash(xxd:*)",
+      "Bash(wandb:*)"
+    ]
+  }
+}

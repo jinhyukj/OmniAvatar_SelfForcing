@@ -251,7 +251,7 @@ class FastGenModel(torch.nn.Module):
         # instantiate the generator network
         logger.info("Instantiating the generator network")
         with self._get_meta_init_context():
-            self.net = instantiate(self.config.net)
+            self.net = instantiate(self.config.net)     ### instantiate(fastgen.configs.net.CausalVACE_Wan_1_3B_Config)  
         no_grad_params = [n for n, p in self.net.named_parameters() if not p.requires_grad]
         if any(no_grad_params):
             logger.warning(

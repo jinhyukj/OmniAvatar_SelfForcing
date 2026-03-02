@@ -32,7 +32,7 @@ class ModelConfig(DMD2ModelConfig):
 @attrs.define(slots=False)
 class Config(DMD2Config):
     model: ModelConfig = attrs.field(factory=ModelConfig)
-    model_class: DictConfig = L(SelfForcingModel)(
+    model_class: DictConfig = L(SelfForcingModel)(              ### {"_target_": SelfForcingModel, "config": None}
         config=None,
     )
 
