@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from fastgen.methods import FastGenModel
 
 
-def log_prof_data(data_list: List[Dict[str, Any]]):
+def log_prof_data(data_list: List[Dict[str, Any]], iteration: int = 0):
     # Create a table to log data with rank information
     metrics = list(data_list[0].keys())
 
@@ -43,6 +43,16 @@ def log_prof_data(data_list: List[Dict[str, Any]]):
     summary_df = pd.DataFrame({"Avg": avg_values, "Max": max_values, "Min": min_values})
 
     logger.info(f"GPU stats:\n{summary_df.to_string()}")
+
+    # Log to wandb
+    try:
+        import wandb
+
+        if wandb.run:
+            wandb.log({f"gpu/{k}_avg": v for k, v in avg_values.items()}, step=iteration)
+            wandb.log({f"gpu/{k}_max": v for k, v in max_values.items()}, step=iteration)
+    except ImportError:
+        pass
 
 
 class GPUStatsCallback(Callback):
@@ -88,5 +98,5 @@ class GPUStatsCallback(Callback):
                 torch.distributed.all_gather_object(data_list, prof_data)
 
             if is_rank0():
-                log_prof_data(data_list)
+                log_prof_data(data_list, iteration=iteration)
             synchronize()

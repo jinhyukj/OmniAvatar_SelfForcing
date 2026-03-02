@@ -4,7 +4,7 @@
 from fastgen.configs.discriminator import Discriminator_Wan_14B_Config
 import fastgen.configs.methods.config_self_forcing as config_self_forcing_default
 from fastgen.configs.data import VideoLoaderConfig
-from fastgen.configs.net import VACE_Wan_14B_Config, CausalVACE_Wan_1_3B_Config, CKPT_ROOT_DIR
+from fastgen.configs.net import VACE_Wan_14B_Config, VACE_Wan_1_3B_Config, CausalVACE_Wan_1_3B_Config, CKPT_ROOT_DIR
 
 """ Configs for SelfForcing with 14B teacher and 1.3B student on VACE WAN. """
 
@@ -31,8 +31,10 @@ def create_config():
     config.model.net.depth_model_path = f"{CKPT_ROOT_DIR}/annotators/depth_anything_v2_vitl.pth"
     config.model.net.total_num_frames = config.model.input_shape[1]
 
-    # 14B teacher (fake_score will also be 14B, instantiated from teacher config)
+    # 14B teacher
     config.model.teacher = VACE_Wan_14B_Config
+    # 1.3B critic (fake_score) — decoupled from teacher to save memory
+    config.model.fake_score_net = VACE_Wan_1_3B_Config
 
     # GAN settings — discriminator must match 14B teacher (40 blocks, inner_dim=5120)
     config.model.gan_loss_weight_gen = 0.003

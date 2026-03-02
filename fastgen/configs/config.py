@@ -100,6 +100,7 @@ class BaseModelConfig:
     # Use factory functions to ensure each instance gets its own copy
     net: dict = attrs.field(factory=lambda: copy.deepcopy(EDMConfig))
     teacher: Optional[dict] = None  # Usually not used, only used when teacher is different from net (i.e. Causvid)
+    fake_score_net: Optional[dict] = None  # Usually not used, only used when critic is different from teacher (i.e. SelfForcing)
 
     # guidance scale for classifier-free guidance in teacher diffusion model. None means no guidance.
     guidance_scale: Optional[float] = None
