@@ -40,9 +40,9 @@ class FdistillModel(DMD2Model):
 
         assert self.config.gan_loss_weight_gen > 0, "f-distill requires gan_loss_weight_gen > 0"
 
-        assert (
-            self.config.f_distill.f_div in all_f_div_weighting_function
-        ), f"Unsupported f-divergence {self.config.f_distill.f_div}"
+        assert self.config.f_distill.f_div in all_f_div_weighting_function, (
+            f"Unsupported f-divergence {self.config.f_distill.f_div}"
+        )
         logger.info(f"Using {self.config.f_distill.f_div}-divergence")
         self.f_div_weighting_function = all_f_div_weighting_function[self.config.f_distill.f_div]
 
@@ -119,6 +119,7 @@ class FdistillModel(DMD2Model):
         data: Dict[str, Any],
         condition: Optional[Any] = None,
         neg_condition: Optional[Any] = None,
+        iteration: int = 0,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """Perform student model update step.
 

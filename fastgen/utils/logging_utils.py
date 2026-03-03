@@ -50,6 +50,22 @@ def set_log_level(level: str):
     )
 
 
+def add_file_logger(path: str, filename: str = "log.txt"):
+    """Add a file sink so all logs are also written to disk (rank 0 only)."""
+    import os
+
+    if not is_rank0():
+        return
+    os.makedirs(path, exist_ok=True)
+    filepath = os.path.join(path, filename)
+    logger.add(
+        filepath,
+        format="[{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line}] {message}",
+        level=LOG_LEVEL,
+        rotation="100 MB",
+    )
+
+
 def rank0_if_not_debug(func: Callable) -> Callable:
     """
     A decorator factory that applies the rank0_only decorator if LOG_LEVEL is not DEBUG.

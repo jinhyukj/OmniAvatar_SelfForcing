@@ -1,18 +1,15 @@
 """
-Launch FastGen training on Modal.
+Launch FastGen T2V training on Modal.
 
 Usage:
-    # DDP (default)
-    modal run train_modal.py
+    # FSDP (recommended for 14B teacher)
+    modal run train_modal_t2v.py --fsdp
 
-    # FSDP
-    modal run train_modal.py --fsdp
-
-    # Different GPU type/count
-    modal run train_modal.py --gpu-type H100 --ngpus 4
+    # DDP
+    modal run train_modal_t2v.py
 
     # Background (survives terminal close)
-    modal run --detach train_modal.py
+    modal run --detach train_modal_t2v.py --fsdp
 
 Setup (one-time):
     pip install modal
@@ -22,13 +19,13 @@ Setup (one-time):
     modal volume create fastgen-output
 
     # Upload data and model checkpoints
-    modal volume put fastgen-data /home/work/stableavatar_data/v2v_wds_shards/ /v2v_wds_shards/
-    modal volume put fastgen-data /home/work/fastgen_models/ /models/
+    modal volume put fastgen-data /path/to/t2v_wds_shards/ /t2v_wds_shards/
+    modal volume put fastgen-data /path/to/fastgen_models/ /models/
 """
 
 import modal
 
-app = modal.App("fastgen-selfforcing")
+app = modal.App("fastgen-selfforcing-t2v")
 
 # Persistent volumes
 data_vol = modal.Volume.from_name("fastgen-data", create_if_missing=True)
@@ -85,16 +82,16 @@ def _run_training(ngpus: int, fsdp: bool):
 
     if fsdp:
         train_args.append("trainer.fsdp=True")
-        train_args.append("log_config.name=stableavatar_sf_14b_teacher_fsdp_modal")
+        train_args.append("log_config.name=wan_sf_14b_teacher_fsdp_modal")
     else:
-        train_args.append("log_config.name=stableavatar_sf_14b_teacher_modal")
+        train_args.append("log_config.name=wan_sf_14b_teacher_modal")
 
     args = [
         "--standalone",
         "--nnodes=1",
         f"--nproc-per-node={ngpus}",
         "train.py",
-        "--config=fastgen/configs/experiments/WanV2V/config_sf_14b_teacher.py",
+        "--config=fastgen/configs/experiments/WanT2V/config_sf_14b_teacher.py",
         "-",
         *train_args,
     ]

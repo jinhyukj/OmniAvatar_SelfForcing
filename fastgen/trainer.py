@@ -75,6 +75,7 @@ class Trainer:
             model (FastGenModel): Distillation model.
         """
         logger.info("Starting training")
+        logger.add_file_logger(self.config.log_config.save_path)
 
         iter_start = 0
         logger.info("Initializing callbacks and model ...")
@@ -118,6 +119,10 @@ class Trainer:
             logger.info("FSDP wrapping completed")
         else:
             model_ddp = model
+        if is_rank0():
+            total_gb = torch.cuda.memory_allocated() / (1024**3)
+            peak_gb = torch.cuda.max_memory_allocated() / (1024**3)
+            logger.info(f"VRAM after model init: allocated={total_gb:.2f} GB, peak={peak_gb:.2f} GB")
         self.callbacks.on_model_init_end(model_ddp)
         synchronize()
 
@@ -306,17 +311,21 @@ class Trainer:
         """
         grad_accum_rounds = self.config.trainer.grad_accum_rounds
         sync_grads = grad_accum_iter == grad_accum_rounds - 1
+        logging_iter = self.config.trainer.logging_iter
 
         if not self.config.trainer.fsdp:
             with ddp.ddp_sync_grad(model_ddp, sync_grads):
                 # forward pass
                 with model.autocast():
-                    loss_map, outputs = model_ddp.single_train_step(data, iteration)        #### fastgen/methods/distribution_matching/dmd2.py 
+                    loss_map, outputs = model_ddp.single_train_step(data, iteration)
                 # backward pass
                 self.callbacks.on_backward_begin(
                     model, data, outputs, loss_map, iteration=iteration, accum_iter=grad_accum_iter
                 )
+                torch.cuda.reset_peak_memory_stats()
+                mem_before_bwd = torch.cuda.memory_allocated()
                 model.grad_scaler.scale(loss_map["total_loss"] / grad_accum_rounds).backward()
+                mem_peak_bwd = torch.cuda.max_memory_allocated()
         else:
             with fsdp.fsdp_sync_grad(model, sync_grads):
                 # forward pass
@@ -326,7 +335,38 @@ class Trainer:
                 self.callbacks.on_backward_begin(
                     model, data, outputs, loss_map, iteration=iteration, accum_iter=grad_accum_iter
                 )
+                torch.cuda.reset_peak_memory_stats()
+                mem_before_bwd = torch.cuda.memory_allocated()
                 model.grad_scaler.scale(loss_map["total_loss"] / grad_accum_rounds).backward()
+                mem_peak_bwd = torch.cuda.max_memory_allocated()
+
+        # Log VRAM usage for backward pass
+        if is_rank0() and iteration % logging_iter == 0:
+            before_gb = mem_before_bwd / (1024**3)
+            peak_gb = mem_peak_bwd / (1024**3)
+            delta_gb = peak_gb - before_gb
+            # Determine training phase from model if available
+            phase = "unknown"
+            if hasattr(model, "config") and hasattr(model.config, "student_update_freq"):
+                phase = "student" if iteration % model.config.student_update_freq == 0 else "fake_score+disc"
+            logger.info(
+                f"VRAM backward ({phase}): before={before_gb:.2f} GB, peak={peak_gb:.2f} GB, "
+                f"delta={delta_gb:.2f} GB"
+            )
+            try:
+                import wandb
+
+                if wandb.run:
+                    wandb.log(
+                        {
+                            f"vram/{phase}_backward_before_gb": before_gb,
+                            f"vram/{phase}_backward_peak_gb": peak_gb,
+                            f"vram/{phase}_backward_delta_gb": delta_gb,
+                        },
+                        step=iteration,
+                    )
+            except ImportError:
+                pass
 
         if grad_accum_iter == grad_accum_rounds - 1:
             # optimizer step, scheduler step, and more

@@ -4,9 +4,9 @@
 from fastgen.configs.discriminator import Discriminator_Wan_14B_Config
 import fastgen.configs.methods.config_self_forcing as config_self_forcing_default
 from fastgen.configs.data import VideoLoaderConfig
-from fastgen.configs.net import VACE_Wan_14B_Config, VACE_Wan_1_3B_Config, CausalVACE_Wan_1_3B_Config, CKPT_ROOT_DIR
+from fastgen.configs.net import Wan21_T2V_14B_Config, Wan_1_3B_Config, CausalWan_1_3B_Config
 
-""" Configs for SelfForcing with 14B teacher and 1.3B student on VACE WAN. """
+""" Configs for SelfForcing with 14B teacher and 1.3B student on WAN T2V. """
 
 
 def create_config():
@@ -24,21 +24,19 @@ def create_config():
     # VAE compress ratio: (1+T/4) * H / 8 * W / 8
     config.model.input_shape = [16, 21, 60, 104]
     config.model.fake_score_pred_type = "x0"
-    config.model.guidance_scale = 4.0
+    config.model.guidance_scale = 5.0
 
     # 1.3B causal student
-    config.model.net = CausalVACE_Wan_1_3B_Config
-    config.model.net.depth_model_path = f"{CKPT_ROOT_DIR}/annotators/depth_anything_v2_vitl.pth"
+    config.model.net = CausalWan_1_3B_Config
     config.model.net.total_num_frames = config.model.input_shape[1]
 
     # 14B teacher
-    config.model.teacher = VACE_Wan_14B_Config
+    config.model.teacher = Wan21_T2V_14B_Config
     # 1.3B critic (fake_score) — decoupled from teacher to save memory
-    config.model.fake_score_net = VACE_Wan_1_3B_Config
+    config.model.fake_score_net = Wan_1_3B_Config
 
     # GAN disabled to save ~35 GB VRAM (discriminator activations + teacher feature extraction)
     config.model.gan_loss_weight_gen = 0
-    ## default config.model.student_update_freq = 5 means updating the student every 5 iterations, and updating the discriminator every iteration. Changing it to 2 means updating the student every 2 iterations, and updating the discriminator every iteration, which can lead to better performance but also more GPU memory usage.
     config.model.student_update_freq = 2
     # config.model.gan_loss_weight_gen = 0.003
     # config.model.discriminator = Discriminator_Wan_14B_Config
@@ -67,5 +65,5 @@ def create_config():
     config.trainer.logging_iter = 100
     config.trainer.save_ckpt_iter = 500
 
-    config.log_config.group = "vacewan_sf_14b_teacher"
+    config.log_config.group = "wan_sf_14b_teacher"
     return config

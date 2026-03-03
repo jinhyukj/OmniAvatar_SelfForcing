@@ -37,6 +37,21 @@ class DMD2Model(FastGenModel):
         super().__init__(config)
         self.config = config
 
+    def _should_log_vram(self, iteration: int) -> bool:
+        return is_rank0() and (iteration <= 5 or iteration % 100 == 0)
+
+    def _log_vram_delta(self, label: str, mem_before: int, mem_after: int, iteration: int) -> None:
+        delta_gb = (mem_after - mem_before) / (1024**3)
+        total_gb = mem_after / (1024**3)
+        logger.info(f"VRAM {label}: delta={delta_gb:.2f} GB, total={total_gb:.2f} GB")
+        try:
+            import wandb
+
+            if wandb.run:
+                wandb.log({f"vram/{label}_delta_gb": delta_gb, f"vram/{label}_total_gb": total_gb}, step=iteration)
+        except ImportError:
+            pass
+
     def build_model(self):
         super().build_model()
         self.build_teacher()
@@ -44,7 +59,9 @@ class DMD2Model(FastGenModel):
 
         # instantiate the fake_score
         fake_score_cfg = self.config.fake_score_net if self.config.fake_score_net is not None else self.teacher_config
-        logger.info(f"Instantiating the fake_score (custom={'yes' if self.config.fake_score_net is not None else 'no'})")
+        logger.info(
+            f"Instantiating the fake_score (custom={'yes' if self.config.fake_score_net is not None else 'no'})"
+        )
         with self._get_meta_init_context():
             self.fake_score = instantiate(fake_score_cfg)
         model_path = self.config.pretrained_model_path
@@ -197,6 +214,7 @@ class DMD2Model(FastGenModel):
         data: Dict[str, Any],
         condition: Optional[Any] = None,
         neg_condition: Optional[Any] = None,
+        iteration: int = 0,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """Perform student model update step.
 
@@ -208,26 +226,41 @@ class DMD2Model(FastGenModel):
             data: Original data batch
             condition: Conditioning information
             neg_condition: Negative conditioning
+            iteration: Current training iteration
 
         Returns:
             tuple of (loss_map, outputs)
         """
+        log_vram = self._should_log_vram(iteration)
+
         # Generate data from student
-        gen_data = self.gen_data_from_net(input_student, t_student, condition=condition)        ## fastgen/methods/distribution_matching/self_forcing.py
+        if log_vram:
+            mem_before = torch.cuda.memory_allocated()
+        gen_data = self.gen_data_from_net(input_student, t_student, condition=condition)
         perturbed_data = self.net.noise_scheduler.forward_process(gen_data, eps, t)
+        if log_vram:
+            self._log_vram_delta("student_fwd/student_step", mem_before, torch.cuda.memory_allocated(), iteration)
 
         # Compute the fake score with x0-prediction
+        if log_vram:
+            mem_before = torch.cuda.memory_allocated()
         with torch.no_grad():
             fake_score_x0 = self.fake_score(perturbed_data, t, condition=condition, fwd_pred_type="x0")
+        if log_vram:
+            self._log_vram_delta("fake_score_fwd/student_step", mem_before, torch.cuda.memory_allocated(), iteration)
 
         # Compute the teacher x0-prediction and gan loss for generator
-        assert (
-            perturbed_data.dtype == data["real"].dtype == input_student.dtype
-        ), f"perturbed_data.dtype: {perturbed_data.dtype}, data['real'].dtype: {data['real'].dtype}, input_student.dtype: {input_student.dtype}"
-        assert (
-            t.dtype == t_student.dtype == self.net.noise_scheduler.t_precision
-        ), f"t.dtype: {t.dtype}, t_student.dtype: {t_student.dtype}, self.net.noise_scheduler.t_precision: {self.net.noise_scheduler.t_precision}"
+        assert perturbed_data.dtype == data["real"].dtype == input_student.dtype, (
+            f"perturbed_data.dtype: {perturbed_data.dtype}, data['real'].dtype: {data['real'].dtype}, input_student.dtype: {input_student.dtype}"
+        )
+        assert t.dtype == t_student.dtype == self.net.noise_scheduler.t_precision, (
+            f"t.dtype: {t.dtype}, t_student.dtype: {t_student.dtype}, self.net.noise_scheduler.t_precision: {self.net.noise_scheduler.t_precision}"
+        )
+        if log_vram:
+            mem_before = torch.cuda.memory_allocated()
         teacher_x0, gan_loss_gen = self._compute_teacher_prediction_gan_loss(perturbed_data, t, condition=condition)
+        if log_vram:
+            self._log_vram_delta("teacher+disc_fwd/student_step", mem_before, torch.cuda.memory_allocated(), iteration)
 
         # Apply classifier-free guidance if needed
         if self.config.guidance_scale is not None:
@@ -328,6 +361,7 @@ class DMD2Model(FastGenModel):
         eps: torch.Tensor,
         real_data: torch.Tensor,
         condition: Optional[Any] = None,
+        iteration: int = 0,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """Perform fake score and discriminator update step.
 
@@ -338,23 +372,32 @@ class DMD2Model(FastGenModel):
             eps: Noise tensor
             condition: Conditioning information
             real_data: Real data tensor
+            iteration: Current training iteration
 
         Returns:
             tuple of (loss_map, outputs)
         """
+        log_vram = self._should_log_vram(iteration)
+
         # Generate data and compute fake score loss
+        if log_vram:
+            mem_before = torch.cuda.memory_allocated()
         with torch.no_grad():
             gen_data = self.gen_data_from_net(input_student, t_student, condition=condition)
             x_t_sg = self.net.noise_scheduler.forward_process(gen_data, eps, t)
+        if log_vram:
+            self._log_vram_delta("student_fwd/fs_disc_step", mem_before, torch.cuda.memory_allocated(), iteration)
 
         # The fake score matches the teacher, but we want to do SDS in x0 space
         fake_score_pred_type = self.config.fake_score_pred_type or self.teacher.net_pred_type
-        assert (
-            x_t_sg.dtype == real_data.dtype == input_student.dtype
-        ), f"x_t_sg.dtype: {x_t_sg.dtype}, real_data.dtype: {real_data.dtype}, input_student.dtype: {input_student.dtype}"
-        assert (
-            t.dtype == t_student.dtype == self.net.noise_scheduler.t_precision
-        ), f"t.dtype: {t.dtype}, t_student.dtype: {t_student.dtype}, self.net.noise_scheduler.t_precision: {self.net.noise_scheduler.t_precision}"
+        assert x_t_sg.dtype == real_data.dtype == input_student.dtype, (
+            f"x_t_sg.dtype: {x_t_sg.dtype}, real_data.dtype: {real_data.dtype}, input_student.dtype: {input_student.dtype}"
+        )
+        assert t.dtype == t_student.dtype == self.net.noise_scheduler.t_precision, (
+            f"t.dtype: {t.dtype}, t_student.dtype: {t_student.dtype}, self.net.noise_scheduler.t_precision: {self.net.noise_scheduler.t_precision}"
+        )
+        if log_vram:
+            mem_before = torch.cuda.memory_allocated()
         fake_score_pred = self.fake_score(x_t_sg, t, condition=condition, fwd_pred_type=fake_score_pred_type)
         loss_fakescore = denoising_score_matching_loss(
             fake_score_pred_type,
@@ -364,11 +407,15 @@ class DMD2Model(FastGenModel):
             eps=eps,
             t=t,
         )
+        if log_vram:
+            self._log_vram_delta("fake_score_fwd/fs_disc_step", mem_before, torch.cuda.memory_allocated(), iteration)
 
         gan_loss_disc = torch.zeros_like(loss_fakescore)
         gan_loss_ar1 = torch.zeros_like(loss_fakescore)
         if self.config.gan_loss_weight_gen > 0:
             # Compute the GAN loss for the discriminator
+            if log_vram:
+                mem_before = torch.cuda.memory_allocated()
             with torch.no_grad():
                 fake_feat = self.teacher(
                     x_t_sg,
@@ -379,9 +426,15 @@ class DMD2Model(FastGenModel):
                 )
 
                 real_feat, t_real = self._compute_real_feat(real_data=real_data, t=t, eps=eps, condition=condition)
+            if log_vram:
+                self._log_vram_delta("teacher_fwd/fs_disc_step", mem_before, torch.cuda.memory_allocated(), iteration)
 
+            if log_vram:
+                mem_before = torch.cuda.memory_allocated()
             real_feat_logit = self.discriminator(real_feat)
             gan_loss_disc = gan_loss_discriminator(real_feat_logit, self.discriminator(fake_feat))
+            if log_vram:
+                self._log_vram_delta("disc_fwd/fs_disc_step", mem_before, torch.cuda.memory_allocated(), iteration)
 
             # Use approximate R1 regularization in the APT paper to regularize the discriminator head
             if self.config.gan_r1_reg_weight > 0:
@@ -442,7 +495,6 @@ class DMD2Model(FastGenModel):
         # Prepare training data and conditions
         real_data, condition, neg_condition = self._prepare_training_data(data)
 
-
         """
         def _setup_grad_requirements(self, iteration: int) -> None:
             if iteration % self.config.student_update_freq == 0:
@@ -467,8 +519,6 @@ class DMD2Model(FastGenModel):
         """
         # Set up gradient requirements based on training phase
         self._setup_grad_requirements(iteration)
-
-
 
         """
         def _generate_noise_and_time(self, real_data):
@@ -500,11 +550,24 @@ class DMD2Model(FastGenModel):
         # Choose between student update or fake_score/discriminator update
         if iteration % self.config.student_update_freq == 0:
             return self._student_update_step(
-                input_student, t_student, t, eps, data, condition=condition, neg_condition=neg_condition
+                input_student,
+                t_student,
+                t,
+                eps,
+                data,
+                condition=condition,
+                neg_condition=neg_condition,
+                iteration=iteration,
             )
         else:
             return self._fake_score_discriminator_update_step(
-                input_student, t_student, t, eps, real_data, condition=condition
+                input_student,
+                t_student,
+                t,
+                eps,
+                real_data,
+                condition=condition,
+                iteration=iteration,
             )
 
     def init_optimizers(self):

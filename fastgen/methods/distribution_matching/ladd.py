@@ -108,6 +108,7 @@ class LADDModel(FastGenModel):
         eps: torch.Tensor,
         data: Dict[str, Any],
         condition: Optional[Any] = None,
+        iteration: int = 0,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor | Callable]]:
         """Perform student model update step.
 

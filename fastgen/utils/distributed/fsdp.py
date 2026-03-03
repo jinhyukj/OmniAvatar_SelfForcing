@@ -131,6 +131,7 @@ def model_to_fsdp(
         num_params = sum(p.numel() for p in v.parameters()) / 1e9
         logger.info(f"Starting FSDP2 wrap for '{k}' ({num_params:.2f}B params)...")
         t0 = time.time()
+        mem_before_wrap = torch.cuda.memory_allocated()
 
         # Step 1: Extract full state dict from rank 0 BEFORE sharding
         # Rank 0 has real weights, other ranks have meta tensors
@@ -211,6 +212,10 @@ def model_to_fsdp(
         else:
             v.to(device=target_device)
         synchronize()
+        mem_after_wrap = torch.cuda.memory_allocated()
+        mem_delta_gb = (mem_after_wrap - mem_before_wrap) / (1024**3)
+        mem_total_gb = mem_after_wrap / (1024**3)
+        logger.info(f"VRAM after FSDP wrap '{k}': +{mem_delta_gb:.2f} GB (total: {mem_total_gb:.2f} GB)")
         logger.info(f"FSDP2 wrapped {k} in {time.time() - t0:.1f}s")
 
     return model

@@ -286,8 +286,14 @@ class FastGenModel(torch.nn.Module):
             # If no FSDP, we need to manually handle casting and device management
             for net_name, net in self.fsdp_dict.items():
                 logger.debug(f"Starting moving {net_name} to context: {ctx}.")
+                mem_before = torch.cuda.memory_allocated()
                 net.to(**ctx)
                 synchronize()
+                mem_after = torch.cuda.memory_allocated()
+                delta_gb = (mem_after - mem_before) / (1024**3)
+                total_gb = mem_after / (1024**3)
+                if is_rank0():
+                    logger.info(f"VRAM after loading {net_name}: +{delta_gb:.2f} GB (total: {total_gb:.2f} GB)")
                 logger.debug(f"Completed moving {net_name} to context: {ctx}.")
 
         # Handle teacher separately if it's not in the FSDP dict
@@ -300,8 +306,14 @@ class FastGenModel(torch.nn.Module):
             if "teacher" not in self.fsdp_dict:
                 # No gradients for teacher, can put in lower precision
                 logger.info(f"Started converting teacher to context: {ctx}.")
+                mem_before = torch.cuda.memory_allocated()
                 self.teacher.to(**ctx)
                 synchronize()
+                mem_after = torch.cuda.memory_allocated()
+                delta_gb = (mem_after - mem_before) / (1024**3)
+                total_gb = mem_after / (1024**3)
+                if is_rank0():
+                    logger.info(f"VRAM after loading teacher: +{delta_gb:.2f} GB (total: {total_gb:.2f} GB)")
 
         # For networks that don't need gradients, we always manually handle casting and device management
         if hasattr(self.net, "init_preprocessors") and self.config.enable_preprocessors:

@@ -1,0 +1,49 @@
+[2026-03-02 12:44:06 | INFO | fastgen.trainer:run:81] Initializing callbacks and model ...
+[2026-03-02 12:44:06 | INFO | fastgen.trainer:run:96] Starting model.on_train_begin ...
+[2026-03-02 12:44:44 | INFO | fastgen.methods.model:on_train_begin:302] Teacher check: add_teacher_to_fsdp_dict=True, fsdp_dict keys=['net', 'fake_score', 'discriminator', 'teacher'], teacher in fsdp_dict=True
+[2026-03-02 12:44:46 | INFO | fastgen.trainer:run:100] model.on_train_begin completed
+[2026-03-02 12:44:46 | INFO | fastgen.trainer:run:111] Wrapping model into fsdp ..
+[2026-03-02 12:44:46 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:102] Fully sharding model with 2 ranks...
+[2026-03-02 12:44:46 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:132] Starting FSDP2 wrap for 'net' (2.15B params)...
+[2026-03-02 12:44:46 | INFO | fastgen.networks.Wan.network:fully_shard:777] Applied FSDP activation checkpointing to transformer blocks
+[2026-03-02 12:44:48 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:177] Completed sharding
+[2026-03-02 12:44:48 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:214] FSDP2 wrapped net in 1.2s
+[2026-03-02 12:44:48 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:132] Starting FSDP2 wrap for 'fake_score' (2.15B params)...
+[2026-03-02 12:44:48 | INFO | fastgen.networks.Wan.network:fully_shard:777] Applied FSDP activation checkpointing to transformer blocks
+[2026-03-02 12:44:49 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:177] Completed sharding
+[2026-03-02 12:44:49 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:214] FSDP2 wrapped fake_score in 1.1s
+[2026-03-02 12:44:49 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:132] Starting FSDP2 wrap for 'discriminator' (0.71B params)...
+[2026-03-02 12:44:49 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:159]   Sharding 15 submodules
+[2026-03-02 12:44:49 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:177] Completed sharding
+[2026-03-02 12:44:49 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:214] FSDP2 wrapped discriminator in 0.3s
+[2026-03-02 12:44:49 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:132] Starting FSDP2 wrap for 'teacher' (17.34B params)...
+[2026-03-02 12:44:49 | INFO | fastgen.networks.Wan.network:fully_shard:777] Applied FSDP activation checkpointing to transformer blocks
+[2026-03-02 12:44:55 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:177] Completed sharding
+[2026-03-02 12:44:55 | INFO | fastgen.utils.distributed.fsdp:model_to_fsdp:214] FSDP2 wrapped teacher in 5.9s
+[2026-03-02 12:44:55 | INFO | fastgen.trainer:run:119] FSDP wrapping completed
+[2026-03-02 12:44:55 | INFO | fastgen.trainer:run:125] VRAM after model init: allocated=32.15 GB, peak=38.28 GB
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.ema:on_model_init_end:64] EMA ema is not enabled, skipping callback.
+[2026-03-02 12:44:55 | INFO | fastgen.trainer:run:138] Auto-Resume Details: None
+[2026-03-02 12:44:55 | INFO | fastgen.trainer:run:142] Loading checkpoints for resuming ..
+[2026-03-02 12:44:55 | ERROR | fastgen.utils.io_utils:latest_checkpoint:82] No model files found in /mnt/output/fastgen/vacewan_sf_14b_teacher/stableavatar_sf_14b_teacher_fsdp_modal/checkpoints
+[2026-03-02 12:44:55 | INFO | fastgen.utils.basic_utils:set_random_seed:144] Using random seed 0.
+[2026-03-02 12:44:55 | INFO | fastgen.trainer:run:170] Instantiating dataloader...
+[2026-03-02 12:44:55 | INFO | fastgen.datasets.wds_utils:get_shards:154] Using a total of 291 shards
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.gpu_stats:on_train_begin:67] every_n to measure gpus stats: 1
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.train_profiler:on_train_begin:54] every_n to profile trainer: 1
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:79] model (SelfForcingModel) has 5015.85 M trainable and 22353.45 M total params (logical).
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:86] model (SelfForcingModel) has 2508.35 M trainable and 11177.89 M total params LOCAL on rank 0.
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:86] model (SelfForcingModel) has 2507.51 M trainable and 11175.56 M total params LOCAL on rank 1.
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:79] net (CausalVACEWan) has 2153.97 M trainable and 2153.97 M total params (logical).
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:86] net (CausalVACEWan) has 1077.19 M trainable and 1077.19 M total params LOCAL on rank 0.
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:86] net (CausalVACEWan) has 1076.78 M trainable and 1076.78 M total params LOCAL on rank 1.
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:79] fake_score (VACEWan) has 2153.97 M trainable and 2153.97 M total params (logical).
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:86] fake_score (VACEWan) has 1077.19 M trainable and 1077.19 M total params LOCAL on rank 0.
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:86] fake_score (VACEWan) has 1076.78 M trainable and 1076.78 M total params LOCAL on rank 1.
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:79] discriminator (FSDPDiscriminator_VideoDiT) has 707.91 M trainable and 707.91 M total params (logical).
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:86] discriminator (FSDPDiscriminator_VideoDiT) has 353.96 M trainable and 353.96 M total params LOCAL on rank 0.
+[2026-03-02 12:44:55 | INFO | fastgen.callbacks.param_count:on_train_begin:86] discriminator (FSDPDiscriminator_VideoDiT) has 353.95 M trainable and 353.95 M total params LOCAL on rank 1.
+[2026-03-02 12:44:55 | INFO | fastgen.trainer:run:179] iter_start: 0
+[2026-03-02 12:45:23 | SUCCESS | fastgen.networks.VaceWan.modules.vace_depth_annotator:__init__:49] Loaded Depth Anything V2 model from /mnt/data/models/annotators/depth_anything_v2_vitl.pth. Loading info: <All keys matched successfully>
+[2026-03-02 12:45:29 | INFO | fastgen.networks.Wan.network_causal:_create_external_caches:762] creating external caches when self-forcing (or student-forcing) is enabled
+[2026-03-02 12:45:30 | INFO | fastgen.networks.VaceWan.network_causal:_create_external_caches_vace:193] creating external caches when self-forcing (or student-forcing) is enabled in vace
