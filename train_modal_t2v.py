@@ -101,29 +101,29 @@ def _run_training(ngpus: int, fsdp: bool):
 # --- DDP variant ---
 @app.function(
     image=image,
-    gpu="H200:8",
+    gpu="H100:4",
     volumes={"/mnt/data": data_vol, "/mnt/output": output_vol},
     secrets=[modal.Secret.from_name("wandb-secret")],
     timeout=24 * 3600,
 )
-def train_ddp(ngpus: int = 8):
+def train_ddp(ngpus: int = 4):
     _run_training(ngpus=ngpus, fsdp=False)
 
 
 # --- FSDP variant ---
 @app.function(
     image=image,
-    gpu="H200:8",
+    gpu="H100:4",
     volumes={"/mnt/data": data_vol, "/mnt/output": output_vol},
     secrets=[modal.Secret.from_name("wandb-secret")],
     timeout=24 * 3600,
 )
-def train_fsdp(ngpus: int = 8):
+def train_fsdp(ngpus: int = 4):
     _run_training(ngpus=ngpus, fsdp=True)
 
 
 @app.local_entrypoint()
-def main(fsdp: bool = False, ngpus: int = 8):
+def main(fsdp: bool = False, ngpus: int = 4):
     if fsdp:
         train_fsdp.remote(ngpus=ngpus)
     else:

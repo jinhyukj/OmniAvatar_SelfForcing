@@ -9,6 +9,7 @@ from fastgen.methods.distribution_matching.f_distill import FdistillModel as Fdi
 
 from fastgen.methods.distribution_matching.causvid import CausVidModel as CausVidModel
 from fastgen.methods.distribution_matching.self_forcing import SelfForcingModel as SelfForcingModel
+from fastgen.methods.omniavatar_self_forcing import OmniAvatarSelfForcingModel as OmniAvatarSelfForcingModel
 
 from fastgen.methods.consistency_model.CM import CMModel as CMModel
 from fastgen.methods.consistency_model.TCM import TCMModel as TCMModel
@@ -20,3 +21,5 @@ from fastgen.methods.fine_tuning.sft import CausalSFTModel as CausalSFTModel
 
 from fastgen.methods.knowledge_distillation.KD import KDModel as KDModel
 from fastgen.methods.knowledge_distillation.KD import CausalKDModel as CausalKDModel
+
+from fastgen.methods.omniavatar_kd import OmniAvatarKDModel as OmniAvatarKDModel

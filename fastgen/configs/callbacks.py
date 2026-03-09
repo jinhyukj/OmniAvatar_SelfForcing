@@ -12,6 +12,7 @@ from fastgen.callbacks.train_profiler import TrainProfilerCallback
 from fastgen.callbacks.gpu_stats import GPUStatsCallback
 from fastgen.callbacks.forced_weight_norm import ForcedWeightNormCallback
 from fastgen.callbacks.gpu_mem_profiler import MemTrackerCallback
+from fastgen.callbacks.vram_report import VRAMReportCallback
 
 
 CTSchedule_CALLBACK = dict(
@@ -62,4 +63,8 @@ WANDB_CALLBACK = dict(
 
 MemTracker_CALLBACK = dict(
     mem_tracker=L(MemTrackerCallback)(),
+)
+
+VRAMReport_CALLBACK = dict(
+    vram_report=L(VRAMReportCallback)(every_n=100),
 )
