@@ -143,6 +143,8 @@ class OmniAvatarWan(FastGenNetwork):
         base_model_paths: Union[str, List[str]] = "",
         omniavatar_ckpt_path: str = "",
         merge_lora: bool = True,
+        lora_rank: int = 128,
+        lora_alpha: float = 64.0,
         load_pretrained: bool = True,
         out_dim: int = 16,
         text_dim: int = 4096,
@@ -179,7 +181,8 @@ class OmniAvatarWan(FastGenNetwork):
 
         # Load pretrained weights
         if load_pretrained and not self._is_in_meta_context():
-            self._load_weights(base_model_paths, omniavatar_ckpt_path, merge_lora)
+            lora_scale = lora_alpha / lora_rank
+            self._load_weights(base_model_paths, omniavatar_ckpt_path, merge_lora, lora_scale)
 
     def _xavier_init(self) -> None:
         """Xavier uniform init for all weight matrices, zeros for biases (OmniAvatar convention)."""
@@ -201,6 +204,7 @@ class OmniAvatarWan(FastGenNetwork):
         base_model_paths: Union[str, List[str]],
         omniavatar_ckpt_path: str,
         merge_lora: bool,
+        lora_scale: float = 0.5,
     ) -> None:
         """Load base Wan 2.1 weights + OmniAvatar checkpoint."""
         # Step 1: Load base Wan 2.1 weights (civitai format — keys match directly)
@@ -230,8 +234,8 @@ class OmniAvatarWan(FastGenNetwork):
                 mapped_sd[new_key] = v
 
             if merge_lora:
-                # Merge LoRA into base weights
-                _merge_lora_into_base(self.model, mapped_sd)
+                # Merge LoRA into base weights (scale = lora_alpha / lora_rank)
+                _merge_lora_into_base(self.model, mapped_sd, lora_scale=lora_scale)
 
                 # Load non-LoRA weights (audio_proj, audio_cond_projs, patch_embedding)
                 non_lora_sd = {k: v for k, v in mapped_sd.items() if "lora_" not in k}
@@ -265,10 +269,10 @@ class OmniAvatarWan(FastGenNetwork):
         # Reference frame repeated across time
         ref_repeated = ref_latent.repeat(1, 1, num_frames, 1, 1)  # [B, 16, T, H, W]
 
-        # Mask channel: 0 for frame 0 (keep), inverted mask for frames 1+
+        # Mask channel: 0 for frame 0 (keep reference), mask value for frames 1+
+        # Convention: 1=generate, 0=keep (matching OmniAvatar inference: msk[:, :, 1:] = 1)
         mask_ch = torch.zeros(B, 1, num_frames, H, W, device=ref_latent.device, dtype=ref_latent.dtype)
-        inverted_mask = 1.0 - mask.to(ref_latent.device, ref_latent.dtype)  # 1=generate, 0=keep
-        mask_ch[:, :, 1:] = inverted_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+        mask_ch[:, :, 1:] = mask.to(ref_latent.device, ref_latent.dtype).unsqueeze(0).unsqueeze(0).unsqueeze(0)
 
         if self.mode == "i2v":
             # I2V: y = [ref(16) + mask(1)] = 17 channels

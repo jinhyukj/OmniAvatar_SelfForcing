@@ -10,14 +10,17 @@ with KV cache during Self-Forcing rollout.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import torch
-import torch.nn as nn
 
 from fastgen.networks.network import CausalFastGenNetwork
-from .wan_model import WanModel, build_rope_freqs
-from .network import OmniAvatarWan, _smart_load_state_dict, _load_safetensors, _merge_lora_into_base
+from .wan_model import WanModel, build_rope_freqs, FLEX_ATTENTION_AVAILABLE
+from .network import OmniAvatarWan
+
+if FLEX_ATTENTION_AVAILABLE:
+    from torch.nn.attention.flex_attention import create_block_mask, BlockMask
 
 import fastgen.utils.logging_utils as logger
 
@@ -229,41 +232,33 @@ class CausalOmniAvatarWan(CausalFastGenNetwork):
 
         return torch.cat([ref_repeated, mask_ch, masked_video_chunk], dim=1)
 
-    def forward(
+    def _forward_chunk(
         self,
         x_t: torch.Tensor,
         t: torch.Tensor,
-        condition: Any = None,
-        r: Optional[torch.Tensor] = None,
-        return_features_early: bool = False,
-        feature_indices: Optional[Set[int]] = None,
-        return_logvar: bool = False,
-        fwd_pred_type: Optional[str] = None,
-        # Causal-specific kwargs (passed by SelfForcingModel.rollout_with_gradient)
-        cache_tag: str = "pos",
+        condition: Any,
         cur_start_frame: int = 0,
         store_kv: bool = False,
-        is_ar: bool = False,
-        **fwd_kwargs,
-    ) -> Union[torch.Tensor, List[torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
-        """Causal forward pass with KV cache.
+        fwd_pred_type: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Forward pass for a single chunk with KV cache.
 
         Args:
             x_t: Noisy latents for current chunk [B, 16, chunk_frames, H, W].
-            t: Timesteps [B].
+            t: Timesteps [B] (single t per sample for this chunk).
             condition: Dict with text_embeds, audio_emb, ref_latent, mask, masked_video.
-            cache_tag: KV cache tag (unused, kept for interface compatibility).
             cur_start_frame: Start frame index in latent space for this chunk.
             store_kv: Whether to write K/V into cache after this forward pass.
-            is_ar: Whether in autoregressive mode.
             fwd_pred_type: Override prediction type.
+
+        Returns:
+            Output tensor [B, 16, chunk_frames, H, W].
         """
         B = x_t.shape[0]
         chunk_frames = x_t.shape[2]
         H_lat, W_lat = x_t.shape[-2], x_t.shape[-1]
 
         # Ensure caches are allocated
-        # Total tokens per frame after patchify: (H_lat / patch_h) * (W_lat / patch_w)
         h = H_lat // self.model.patch_size[1]
         w = W_lat // self.model.patch_size[2]
         total_tokens = self.total_num_frames * h * w
@@ -310,3 +305,244 @@ class CausalOmniAvatarWan(CausalFastGenNetwork):
             )
 
         return raw_output
+
+    def forward(
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        condition: Any = None,
+        r: Optional[torch.Tensor] = None,
+        return_features_early: bool = False,
+        feature_indices: Optional[Set[int]] = None,
+        return_logvar: bool = False,
+        fwd_pred_type: Optional[str] = None,
+        # Causal-specific kwargs (passed by SelfForcingModel.rollout_with_gradient)
+        cache_tag: str = "pos",
+        cur_start_frame: int = 0,
+        store_kv: bool = False,
+        is_ar: bool = False,
+        **fwd_kwargs,
+    ) -> Union[torch.Tensor, List[torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
+        """Causal forward pass with KV cache.
+
+        Supports two modes:
+        1. **Single-chunk mode** (inference / Self-Forcing rollout):
+           x_t: [B, 16, chunk_frames, H, W], t: [B]
+           Processes one chunk, optionally storing KV cache.
+
+        2. **Full-sequence mode** (CausalKD training):
+           x_t: [B, 16, T_total, H, W], t: [B, T_total]
+           Automatically splits into chunks, processes each with causal KV cache,
+           and concatenates outputs. Caches are cleared before and after.
+
+        Args:
+            x_t: Noisy latents [B, 16, T, H, W] where T is chunk_frames or T_total.
+            t: Timesteps [B] for single-chunk or [B, T_total] for full-sequence.
+            condition: Dict with text_embeds, audio_emb, ref_latent, mask, masked_video.
+            cache_tag: KV cache tag (unused, kept for interface compatibility).
+            cur_start_frame: Start frame index (single-chunk mode only).
+            store_kv: Whether to store KV cache (single-chunk mode only).
+            is_ar: Whether in autoregressive mode.
+            fwd_pred_type: Override prediction type.
+        """
+        # Detect full-sequence mode: t has per-frame dimension [B, T]
+        if t.dim() == 2:
+            return self._forward_full_sequence(x_t, t, condition, fwd_pred_type=fwd_pred_type)
+
+        # Single-chunk mode (original behavior)
+        return self._forward_chunk(
+            x_t, t, condition,
+            cur_start_frame=cur_start_frame,
+            store_kv=store_kv,
+            fwd_pred_type=fwd_pred_type,
+        )
+
+    def _prepare_blockwise_causal_attn_mask(
+        self,
+        device: torch.device,
+        num_frames: int,
+        frame_seqlen: int,
+        chunk_size: int,
+    ) -> Optional["BlockMask"]:
+        """Construct a block-wise causal attention mask for FlexAttention.
+
+        Each chunk of `chunk_size` frames can attend to all tokens in its own chunk
+        and all previous chunks. This enables processing the full sequence in one
+        forward pass while maintaining causal structure.
+
+        Args:
+            device: Device for mask tensors.
+            num_frames: Total number of latent frames (e.g. 21).
+            frame_seqlen: Tokens per frame after patchification (h * w).
+            chunk_size: Latent frames per causal chunk.
+
+        Returns:
+            BlockMask for FlexAttention, or None if FlexAttention unavailable.
+        """
+        if not FLEX_ATTENTION_AVAILABLE:
+            return None
+
+        logger.info(
+            f"Creating blockwise causal attn mask: {num_frames} frames, "
+            f"{frame_seqlen} tokens/frame, chunk_size={chunk_size}"
+        )
+
+        total_length = num_frames * frame_seqlen
+        padded_length = math.ceil(total_length / 128) * 128 - total_length
+
+        ends = torch.zeros(total_length + padded_length, device=device, dtype=torch.long)
+
+        # Build chunk layout: front-load remainder into first chunk
+        num_chunks = num_frames // chunk_size
+        remaining_size = num_frames % chunk_size
+
+        frame_counts: List[int] = []
+        if num_frames > 0:
+            if num_chunks == 0:
+                frame_counts.append(remaining_size)
+            else:
+                frame_counts.append(chunk_size + remaining_size)
+                frame_counts.extend([chunk_size] * max(num_chunks - 1, 0))
+
+        current_start = 0
+        for frames_in_chunk in frame_counts:
+            chunk_len_tokens = frames_in_chunk * frame_seqlen
+            ends[current_start : current_start + chunk_len_tokens] = current_start + chunk_len_tokens
+            current_start += chunk_len_tokens
+
+        def attention_mask(b, h, q_idx, kv_idx):
+            return (kv_idx < ends[q_idx]) | (q_idx == kv_idx)
+
+        block_mask = create_block_mask(
+            attention_mask,
+            B=None,
+            H=None,
+            Q_LEN=total_length + padded_length,
+            KV_LEN=total_length + padded_length,
+            _compile=False,
+            device=device,
+        )
+        return block_mask
+
+    def _build_full_v2v_y(self, condition: Dict[str, Any]) -> torch.Tensor:
+        """Build V2V y tensor for the full sequence (all frames).
+
+        Args:
+            condition: Full condition dict.
+
+        Returns:
+            y: [B, 33, T_total, H, W]
+        """
+        ref_latent = condition["ref_latent"]  # [B, 16, 1, H, W]
+        mask = condition["mask"]  # [H, W]
+        masked_video = condition["masked_video"]  # [B, 16, T_total, H, W]
+
+        B = ref_latent.shape[0]
+        T_total = masked_video.shape[2]
+        H, W = ref_latent.shape[-2], ref_latent.shape[-1]
+
+        # Reference repeated for all frames
+        ref_repeated = ref_latent.repeat(1, 1, T_total, 1, 1)
+
+        # Mask channel: frame 0 = 0 (keep all), frames 1+ = inverted mask
+        mask_ch = torch.zeros(B, 1, T_total, H, W, device=ref_latent.device, dtype=ref_latent.dtype)
+        inverted_mask = 1.0 - mask.to(ref_latent.device, ref_latent.dtype)
+        mask_ch[:, :, 1:] = inverted_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+
+        return torch.cat([ref_repeated, mask_ch, masked_video], dim=1)
+
+    def _forward_full_sequence(
+        self,
+        x_t: torch.Tensor,
+        t_inhom: torch.Tensor,
+        condition: Any,
+        fwd_pred_type: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Full-sequence forward for CausalKD training with inhomogeneous timesteps.
+
+        Uses block-wise causal attention masks to process all chunks in a single
+        forward pass (parallel, faster training). Falls back to sequential KV cache
+        processing if FlexAttention is unavailable.
+
+        Args:
+            x_t: Full noisy sequence [B, C, T_total, H, W].
+            t_inhom: Per-frame timesteps [B, T_total] (constant within each chunk).
+            condition: Full condition dict.
+            fwd_pred_type: Override prediction type.
+
+        Returns:
+            Full output [B, C, T_total, H, W].
+        """
+        if not FLEX_ATTENTION_AVAILABLE:
+            return self._forward_full_sequence_kv_cache(x_t, t_inhom, condition, fwd_pred_type)
+
+        T_total = x_t.shape[2]
+        H_lat, W_lat = x_t.shape[-2], x_t.shape[-1]
+        h = H_lat // self.model.patch_size[1]
+        w = W_lat // self.model.patch_size[2]
+        frame_seqlen = h * w
+
+        # Create block mask (cached after first call)
+        if not hasattr(self, "_block_mask") or self._block_mask is None:
+            self._block_mask = self._prepare_blockwise_causal_attn_mask(
+                x_t.device, T_total, frame_seqlen, self.chunk_size
+            )
+
+        # Build full V2V conditioning
+        y_full = self._build_full_v2v_y(condition)
+
+        # Unpack condition
+        text_embeds = condition["text_embeds"]
+        audio_emb = condition.get("audio_emb")
+
+        # Single forward pass with block mask and per-frame timesteps
+        raw_output = self.model.forward_blockwise(
+            x=x_t,
+            timestep_per_frame=t_inhom,
+            context=text_embeds,
+            y=y_full,
+            block_mask=self._block_mask,
+            audio_emb=audio_emb,
+            use_gradient_checkpointing=self.training,
+        )
+
+        # Convert prediction type
+        target_type = fwd_pred_type or self.net_pred_type
+        if target_type != "flow":
+            raw_output = self.noise_scheduler.convert_model_output(
+                x_t, raw_output, t_inhom[:, :, None, None], src_pred_type="flow", target_pred_type=target_type
+            )
+
+        return raw_output
+
+    def _forward_full_sequence_kv_cache(
+        self,
+        x_t: torch.Tensor,
+        t_inhom: torch.Tensor,
+        condition: Any,
+        fwd_pred_type: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Fallback: full-sequence forward using sequential KV cache (when FlexAttention unavailable)."""
+        T_total = x_t.shape[2]
+        chunk_size = self.chunk_size
+
+        self.clear_caches()
+
+        outputs = []
+        frame_offset = 0
+        while frame_offset < T_total:
+            chunk_end = min(frame_offset + chunk_size, T_total)
+            x_chunk = x_t[:, :, frame_offset:chunk_end]
+            t_chunk = t_inhom[:, frame_offset]
+
+            output_chunk = self._forward_chunk(
+                x_chunk, t_chunk, condition,
+                cur_start_frame=frame_offset,
+                store_kv=True,
+                fwd_pred_type=fwd_pred_type,
+            )
+            outputs.append(output_chunk)
+            frame_offset = chunk_end
+
+        self.clear_caches()
+        return torch.cat(outputs, dim=2)

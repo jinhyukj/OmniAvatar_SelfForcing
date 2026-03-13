@@ -14,6 +14,7 @@ Changes from original:
 """
 
 import math
+import os
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -40,6 +41,30 @@ try:
 except ModuleNotFoundError:
     FLASH_ATTN_2_AVAILABLE = False
 
+# FlexAttention for block-wise causal masks (PyTorch >= 2.5)
+_disable_flex_env = os.environ.get("FASTGEN_DISABLE_FLEX_ATTENTION", "0") == "1"
+try:
+    if _disable_flex_env:
+        raise ImportError("FlexAttention disabled via FASTGEN_DISABLE_FLEX_ATTENTION=1")
+    from torch.nn.attention.flex_attention import create_block_mask, flex_attention as _flex_attention, BlockMask
+
+    FLEX_ATTENTION_AVAILABLE = True
+
+    _disable_compile_wrap = (
+        os.environ.get("TORCH_COMPILE_DISABLE", "0") == "1"
+        or os.environ.get("FASTGEN_FLEX_COMPILE", "1") == "0"
+    )
+    _compile_mode = os.environ.get("TORCH_COMPILE_MODE", "default")
+    if not _disable_compile_wrap:
+        _flex_attention = torch.compile(_flex_attention, dynamic=False, mode=_compile_mode)
+except ImportError:
+    FLEX_ATTENTION_AVAILABLE = False
+    create_block_mask = None  # type: ignore[assignment]
+    _flex_attention = None  # type: ignore[assignment]
+
+    class BlockMask:  # type: ignore[no-redef]
+        pass
+
 
 def flash_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, num_heads: int) -> torch.Tensor:
     """Multi-head attention with flash_attn_3 > flash_attn_2 > SDPA fallback."""
@@ -61,6 +86,29 @@ def flash_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, num_heads
         v = rearrange(v, "b s (n d) -> b n s d", n=num_heads)
         x = F.scaled_dot_product_attention(q, k, v)
         return rearrange(x, "b n s d -> b s (n d)")
+
+
+def flex_attention_with_mask(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, num_heads: int, block_mask: "BlockMask"
+) -> torch.Tensor:
+    """Multi-head attention with FlexAttention block mask. Input: [B, N, D]."""
+    q = rearrange(q, "b s (n d) -> b n s d", n=num_heads).contiguous()
+    k = rearrange(k, "b s (n d) -> b n s d", n=num_heads).contiguous()
+    v = rearrange(v, "b s (n d) -> b n s d", n=num_heads).contiguous()
+
+    # Pad sequence to multiple of 128 (FlexAttention requirement)
+    seqlen = q.shape[2]
+    padded_len = math.ceil(seqlen / 128) * 128 - seqlen
+    if padded_len > 0:
+        q = F.pad(q, (0, 0, 0, padded_len))
+        k = F.pad(k, (0, 0, 0, padded_len))
+        v = F.pad(v, (0, 0, 0, padded_len))
+
+    x = _flex_attention(q, k, v, block_mask=block_mask)
+
+    if padded_len > 0:
+        x = x[:, :, :seqlen, :]
+    return rearrange(x, "b n s d -> b s (n d)")
 
 
 # --------------------------------------------------------------------------- #
@@ -158,6 +206,7 @@ class SelfAttention(nn.Module):
         freqs: torch.Tensor,
         kv_cache: Optional[Dict] = None,
         store_kv: bool = False,
+        block_mask: Optional["BlockMask"] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -165,6 +214,8 @@ class SelfAttention(nn.Module):
             freqs: [N, 1, head_dim_complex] RoPE frequencies for current positions
             kv_cache: Optional dict with keys "k", "v", "len" for KV caching
             store_kv: If True and kv_cache is not None, write K/V into cache
+            block_mask: Optional FlexAttention BlockMask for block-wise causal attention.
+                        Mutually exclusive with kv_cache.
         """
         q = self.norm_q(self.q(x))
         k = self.norm_k(self.k(x))
@@ -174,20 +225,24 @@ class SelfAttention(nn.Module):
         q = rope_apply(q, freqs, self.num_heads)
         k = rope_apply(k, freqs, self.num_heads)
 
-        # Prepend cached K/V if available
-        if kv_cache is not None and kv_cache["len"] > 0:
-            cached_len = kv_cache["len"]
-            k = torch.cat([kv_cache["k"][:, :cached_len], k], dim=1)
-            v = torch.cat([kv_cache["v"][:, :cached_len], v], dim=1)
+        if block_mask is not None and FLEX_ATTENTION_AVAILABLE:
+            # Block-wise causal: full-sequence forward with FlexAttention mask
+            out = flex_attention_with_mask(q, k, v, self.num_heads, block_mask)
+        else:
+            # Standard path (possibly with KV cache)
+            if kv_cache is not None and kv_cache["len"] > 0:
+                cached_len = kv_cache["len"]
+                k = torch.cat([kv_cache["k"][:, :cached_len], k], dim=1)
+                v = torch.cat([kv_cache["v"][:, :cached_len], v], dim=1)
 
-        out = flash_attention(q, k, v, self.num_heads)
+            out = flash_attention(q, k, v, self.num_heads)
 
-        # Store K/V into cache
-        if store_kv and kv_cache is not None:
-            new_len = k.shape[1]
-            kv_cache["k"][:, :new_len] = k
-            kv_cache["v"][:, :new_len] = v
-            kv_cache["len"] = new_len
+            # Store K/V into cache
+            if store_kv and kv_cache is not None:
+                new_len = k.shape[1]
+                kv_cache["k"][:, :new_len] = k
+                kv_cache["v"][:, :new_len] = v
+                kv_cache["len"] = new_len
 
         return self.o(out)
 
@@ -280,16 +335,34 @@ class DiTBlock(nn.Module):
         self_kv_cache: Optional[Dict] = None,
         cross_kv_cache: Optional[Dict] = None,
         store_kv: bool = False,
+        block_mask: Optional["BlockMask"] = None,
     ) -> torch.Tensor:
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-            self.modulation.to(dtype=t_mod.dtype, device=t_mod.device) + t_mod
-        ).chunk(6, dim=1)
+        """
+        Args:
+            x: [B, N, D] hidden states
+            context: [B, L, D] text context
+            t_mod: [B, 6, D] (standard) or [B, 6, N, D] (per-token, for blockwise causal)
+            freqs: RoPE frequencies
+            block_mask: Optional FlexAttention block mask for causal training
+        """
+        if t_mod.dim() == 4:
+            # Per-token modulation: [B, 6, N, dim]
+            mod = self.modulation.unsqueeze(2).to(dtype=t_mod.dtype, device=t_mod.device)
+            combined = mod + t_mod  # [B, 6, N, dim]
+            parts = combined.chunk(6, dim=1)
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = [p.squeeze(1) for p in parts]
+        else:
+            # Standard: [B, 6, dim]
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+                self.modulation.to(dtype=t_mod.dtype, device=t_mod.device) + t_mod
+            ).chunk(6, dim=1)
 
         x = x + gate_msa * self.self_attn(
             modulate(self.norm1(x), shift_msa, scale_msa),
             freqs,
             kv_cache=self_kv_cache,
             store_kv=store_kv,
+            block_mask=block_mask,
         )
         x = x + self.cross_attn(
             self.norm3(x),
@@ -314,7 +387,18 @@ class Head(nn.Module):
         self.modulation = nn.Parameter(torch.randn(1, 2, dim) / dim**0.5)
 
     def forward(self, x: torch.Tensor, t_mod: torch.Tensor) -> torch.Tensor:
-        shift, scale = (self.modulation.to(dtype=t_mod.dtype, device=t_mod.device) + t_mod).chunk(2, dim=1)
+        """
+        Args:
+            t_mod: [B, dim] (standard, B=1) or [B, N, dim] (per-token, for blockwise causal)
+        """
+        mod = self.modulation.to(dtype=t_mod.dtype, device=t_mod.device)
+        if t_mod.dim() == 3:
+            # Per-token: t_mod is [B, N, dim], mod is [1, 2, dim]
+            shift = mod[:, 0:1, :] + t_mod  # [B, N, dim]
+            scale = mod[:, 1:2, :] + t_mod  # [B, N, dim]
+        else:
+            # Standard: t_mod is [B, dim], mod is [1, 2, dim] (works for B=1)
+            shift, scale = (mod + t_mod).chunk(2, dim=1)
         return self.head(self.norm(x) * (1 + scale) + shift)
 
 
@@ -508,6 +592,110 @@ class WanModel(nn.Module):
 
         # Head + unpatchify
         x = self.head(x, t)
+        x = self.unpatchify(x, (f, h, w))
+        return x
+
+    def forward_blockwise(
+        self,
+        x: torch.Tensor,
+        timestep_per_frame: torch.Tensor,
+        context: torch.Tensor,
+        y: torch.Tensor,
+        block_mask: "BlockMask",
+        audio_emb: Optional[torch.Tensor] = None,
+        clip_feature: Optional[torch.Tensor] = None,
+        use_gradient_checkpointing: bool = False,
+    ) -> torch.Tensor:
+        """Full-sequence forward with per-frame timesteps and block-wise causal mask.
+
+        Processes all chunks in a single forward pass using FlexAttention block masks
+        for causal masking, with per-frame timestep modulation (inhomogeneous timesteps).
+
+        Args:
+            x: Noisy latents [B, 16, T_lat, H_lat, W_lat].
+            timestep_per_frame: Per-frame timesteps [B, T_lat].
+            context: Text embeddings [B, L, text_dim].
+            y: Full conditioning tensor [B, 33, T_lat, H_lat, W_lat].
+            block_mask: FlexAttention BlockMask for block-wise causal attention.
+            audio_emb: Optional Wav2Vec2 features [B, T_video, 10752].
+            clip_feature: Optional CLIP image features [B, 257, 1280].
+            use_gradient_checkpointing: Enable gradient checkpointing.
+
+        Returns:
+            Predicted output [B, 16, T_lat, H_lat, W_lat] (flow prediction).
+        """
+        B = x.shape[0]
+        T_lat = timestep_per_frame.shape[1]
+        lat_h, lat_w = x.shape[-2], x.shape[-1]
+
+        # Per-frame time embedding: [B, T_lat] → [B*T_lat] → embed → reshape
+        t_flat = timestep_per_frame.reshape(-1)
+        t_emb = sinusoidal_embedding_1d(self.freq_dim, t_flat).to(dtype=x.dtype)
+        t = self.time_embedding(t_emb)  # [B*T_lat, dim]
+        t_per_frame = t.reshape(B, T_lat, self.dim)  # [B, T_lat, dim]
+
+        # Per-frame modulation: [B*T_lat, 6*dim] → [B, T_lat, 6, dim]
+        t_mod_flat = self.time_projection(t)  # [B*T_lat, 6*dim]
+        t_mod_per_frame = t_mod_flat.reshape(B, T_lat, 6, self.dim)
+
+        # Text embedding
+        context = self.text_embedding(context)
+
+        # CLIP image embedding
+        if clip_feature is not None and self.has_image_input:
+            context = torch.cat([self.img_emb(clip_feature), context], dim=1)
+
+        # Audio processing
+        audio_processed = None
+        if audio_emb is not None and self.use_audio:
+            audio_processed = self._prepare_audio(audio_emb, B)
+
+        # Patchify
+        x = torch.cat([x, y], dim=1)
+        x = self.patch_embedding(x)
+        x, (f, h, w) = self.patchify(x)
+
+        # Expand per-frame modulation to per-token: [B, T_lat, 6, dim] → [B, 6, N, dim]
+        # Each frame has h*w tokens after patchification
+        hw = h * w
+        # [B, T_lat, 6, dim] → [B, T_lat, 1, 6, dim] → expand → [B, T_lat, hw, 6, dim]
+        t_mod_per_token = t_mod_per_frame.unsqueeze(2).expand(-1, -1, hw, -1, -1)
+        # [B, T_lat*hw, 6, dim] → permute → [B, 6, N, dim]
+        t_mod_per_token = t_mod_per_token.reshape(B, T_lat * hw, 6, self.dim).permute(0, 2, 1, 3)
+
+        # Per-token t for Head: [B, T_lat, dim] → [B, T_lat*hw, dim]
+        t_per_token = t_per_frame.unsqueeze(2).expand(-1, -1, hw, -1).reshape(B, T_lat * hw, self.dim)
+
+        # RoPE frequencies for full sequence
+        freqs = build_rope_freqs(self.freqs, f, h, w, x.device)
+
+        # Transformer blocks
+        def create_custom_forward(module):
+            def custom_forward(*inputs):
+                return module(*inputs)
+
+            return custom_forward
+
+        for layer_i, block in enumerate(self.blocks):
+            # Audio conditioning injection (blocks 2 through num_layers//2)
+            if audio_processed is not None and 1 < layer_i <= self.num_layers // 2:
+                au_idx = layer_i - 2
+                audio_tokens = audio_processed[:, au_idx]
+                audio_tokens = audio_tokens.repeat(1, 1, lat_h // 2, lat_w // 2, 1)
+                audio_tokens = self.patchify(audio_tokens.permute(0, 4, 1, 2, 3))[0]
+                x = x + audio_tokens
+
+            if self.training and use_gradient_checkpointing:
+                x = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block), x, context, t_mod_per_token, freqs,
+                    None, None, False, block_mask,
+                    use_reentrant=False,
+                )
+            else:
+                x = block(x, context, t_mod_per_token, freqs, block_mask=block_mask)
+
+        # Head + unpatchify
+        x = self.head(x, t_per_token)
         x = self.unpatchify(x, (f, h, w))
         return x
 

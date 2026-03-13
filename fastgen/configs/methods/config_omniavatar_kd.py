@@ -2,23 +2,23 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Method config for OmniAvatar KD (Knowledge Distillation) pretraining.
+Method config for OmniAvatar Causal KD (Knowledge Distillation) pretraining.
 
-Uses standard non-causal KDModel with OmniAvatar condition dict wrapper.
-Extends the base config_kd with OmniAvatar-specific settings.
+Uses CausalKDModel with OmniAvatar condition dict wrapper.
+Extends the base config_kd_causal with OmniAvatar-specific settings.
 """
 
 from omegaconf import DictConfig
 
 from fastgen.utils import LazyCall as L
-import fastgen.configs.methods.config_kd as config_kd_default
+import fastgen.configs.methods.config_kd_causal as config_kd_causal_default
 from fastgen.methods.omniavatar_kd import OmniAvatarKDModel
 
 
 def create_config():
-    config = config_kd_default.create_config()
+    config = config_kd_causal_default.create_config()
 
-    # Use OmniAvatar KD model (condition dict wrapper)
+    # Use OmniAvatar Causal KD model (condition dict wrapper around CausalKDModel)
     config.model_class = L(OmniAvatarKDModel)(config=None)
 
     # 4-step KD aligned with ODE pair timesteps

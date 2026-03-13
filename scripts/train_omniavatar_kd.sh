@@ -2,7 +2,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Train OmniAvatar KD: pretrain bidirectional V2V 1.3B student on ODE pairs.
+# Train OmniAvatar Causal KD: pretrain V2V 1.3B causal student on ODE pairs.
+#
+# Uses CausalKDModel with inhomogeneous timesteps (different t per chunk),
+# matching the causal student's inference behavior.
 #
 # Usage:
 #   bash scripts/train_omniavatar_kd.sh
@@ -38,4 +41,4 @@ torchrun --nproc_per_node="${NUM_GPUS}" --master_port="${MASTER_PORT}" train.py 
     - trainer.ddp=True \
       dataloader_train.datatags="['${DATA_LIST_PATH}']" \
       dataloader_train.latentsync_mask_path="${LATENTSYNC_MASK_PATH}" \
-      log_config.name=omniavatar_kd_v2v_1.3B
+      log_config.name=omniavatar_kd_causal_v2v_1.3B
